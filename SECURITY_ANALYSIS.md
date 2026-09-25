@@ -134,7 +134,71 @@ seats that should not exist.
 
 ---
 
-## How the two findings combine
+## Finding 3 — Improper duplicate-enrollment check (section overwrite)
+
+### What was observed (screen recording)
+- The application **does** correctly reject some cases server-side: a full section
+  shows *"Sorry! The section seat has been filled up. Please try another
+  section."* and a timetable clash shows *"Class conflict of this section(A).
+  Please try to take another section."*
+- However, for a course the student is **already enrolled in**, requesting the
+  **same course in a different section** does **not** show the "already taken"
+  message. Instead the existing enrollment is **silently replaced** with the new
+  section. Confirmed live: a single `CSC 466` row in the taken-courses list moved
+  from section **L** to section **O**, with **Total Credit Hours unchanged (11)**
+  — i.e. an overwrite, not a duplicate.
+- Same course + **same** section is still rejected as already taken.
+
+### Why it happens
+The "already enrolled" guard is almost certainly keyed on **course *and*
+section** rather than **course** alone:
+
+```
+-- current (flawed) duplicate check
+WHERE student_id = ? AND course_code = ? AND section = ?
+```
+
+Because `section` is part of the match, the same course in a *different* section
+is not recognised as a duplicate, so the code proceeds — and (via an update or an
+upsert keyed on course+section) **reassigns** the student's enrollment to the new
+section.
+
+### Why it is a problem
+- A student can **move themselves between sections at will**, bypassing section
+  assignment/locking rules and fairness.
+- If the replacement does **not** free the old section's seat and reserve the new
+  one atomically, **seat counts drift** — which directly feeds the overbooking in
+  Finding 2.
+- Combined with the IDOR (Finding 1), the target section is chosen from an
+  editable URL id, widening the abuse.
+
+### The fix
+Key the uniqueness rule on **course only**, and enforce it in the database:
+
+```php
+$exists = Enrollment::where('student_id', $sid)
+                    ->where('course_code', $course)   // NOT section
+                    ->exists();
+if ($exists) {
+    return back()->withErrors('You have already taken this course.');
+}
+```
+
+Add a database constraint `UNIQUE (student_id, course_code)` so a duplicate is
+impossible even under concurrency. If switching section is intended to be
+allowed, route it through an explicit "change section" action that, in one
+transaction, **releases the old section's seat and reserves the new one**.
+
+> **Note on evidence capture.** During recording, the browser's Network panel
+> appeared empty because enrollment happens in a **separate popup window**; a
+> DevTools instance attached to the main tab cannot see another window's
+> requests. Open DevTools **inside the popup** to capture the enroll request
+> (observed initiator/endpoint hint: `AddOfferedCourse` / `taken_course_info`).
+> This is normal browser behaviour, not a security control.
+
+---
+
+## How the findings combine
 
 A bot that (a) exploits the IDOR to target arbitrary/full sections and (b) fires
 concurrent requests to defeat the seat check can enroll into sections it should
@@ -203,6 +267,7 @@ Additional hardening:
 |---|---------------|-------|-------|--------|
 | 1 | Enroll via swapped course id in URL | Broken Access Control (IDOR) | Section chosen from untrusted URL id, not the signed token | Partially mitigated |
 | 2 | Seats exceed 40 (→41) under bot | Race Condition (TOCTOU) | Non-atomic check-then-update of seat count | **Active** |
+| 3 | Re-taking a course in another section overwrites it | Improper duplicate check / business-logic flaw | "Already enrolled" guard keyed on course+section instead of course | **Active** |
 
 ---
 
