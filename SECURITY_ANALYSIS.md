@@ -7,10 +7,26 @@ during automated (bot) enrollment.
 **Technology identified:** Laravel (PHP) framework, served by LiteSpeed web server.
 
 > **Basis of findings.** This report is based on (1) behavior the system owner
-> directly reproduced, (2) observable characteristics of the live responses, and
-> (3) well-established properties of the identified framework. Where the exact
-> code could not be inspected, the root cause is stated as the *most probable*
-> mechanism consistent with the observed behavior, with the reasoning shown.
+> directly reproduced, (2) observable characteristics of the live responses,
+> confirmed by read-only inspection, and (3) well-established properties of the
+> identified framework. Where the exact code could not be inspected, the root
+> cause is stated as the *most probable* mechanism consistent with the observed
+> behavior, with the reasoning shown.
+
+### Confirmed by read-only inspection
+
+- **Login:** `POST /Final-Enrollment/login` with fields `student_id`,
+  `password`, `program`, and a CSRF `_token`. Login is CSRF-protected.
+- **Enrollment URL:**
+  `/Final-Enrollment/courseinformation/<COURSE_ID>/<TOKEN_A>/<TOKEN_B>` — the
+  `<COURSE_ID>` segment is **plaintext and user-editable**; the two tokens are
+  Laravel `Crypt::encrypt()` payloads (`{"iv","value","mac","tag"}`).
+- **Key evidence (screenshot):** a section displays **`41 / 41`** while all other
+  sections cap at `40 / 40`. The format is `taken / capacity`, so **the capacity
+  value itself was increased to 41** — the enroll action *writes* the seat
+  counter rather than consuming a fixed seat. This is the decisive clue: the
+  overbooking is produced by an extra *write* to the seat counter, not merely an
+  extra row against a fixed limit.
 
 ---
 
@@ -77,10 +93,11 @@ decrypted token).
 ## Finding 2 — Race Condition on seat capacity (root cause of 40 → 41)
 
 ### What was observed
-- Seat limit is configured to **40**.
+- Seat limit is configured to **40** (sections show `taken / 40`).
 - Under normal manual use, the limit holds.
-- Under a **bot loader** issuing rapid/parallel enrollment requests, some
-  sections reach **41** — one seat **over** the limit.
+- Under a **bot loader** issuing rapid/parallel enrollment requests, an affected
+  section shows **`41 / 41`** — both the taken count **and the capacity** moved to
+  41. The seat counter was *written* past its intended maximum.
 
 ### Why it happens — Time-Of-Check to Time-Of-Use (TOCTOU)
 The enrollment logic almost certainly follows this shape:
