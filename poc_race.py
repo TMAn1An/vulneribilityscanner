@@ -42,12 +42,19 @@ ACCOUNTS = [
 ]
 
 # The section every account will try to enroll into AT THE SAME TIME.
-# Use the course id + tokens from the enrollment URL of your TEST section
-# that is currently at 39/40.
+# Values come from your captured AddOfferedCourse request / the section URL.
+# Use a TEST section currently at 39/40.
 TARGET = {
-    "course_id": "REPLACE_WITH_TEST_SECTION_COURSE_ID",
-    "token_a": "REPLACE_WITH_TOKEN_A",
-    "token_b": "REPLACE_WITH_TOKEN_B",
+    # plaintext offering id + encrypted tokens from the section's GET popup URL
+    # (needed only to fetch a fresh _token before posting)
+    "offering_id": "REPLACE_WITH_OFFERING_ID",
+    "course_code_enc": "REPLACE_WITH_ENCRYPTED_COURSE_CODE",
+    "section_enc": "REPLACE_WITH_ENCRYPTED_SECTION",
+    # plaintext values the POST actually uses:
+    "course_code": "CSC 466",     # <-- your test course
+    "section": "O",               # <-- your test section
+    "semester": "Fall 2026",
+    "sec": "DAY",
 }
 
 
@@ -68,27 +75,37 @@ def login(account: dict) -> httpx.Client:
 
 
 def enroll(client: httpx.Client, account: dict) -> str:
-    """Send ONE enrollment request for `account` into TARGET.
+    """Send ONE real enrollment request for `account` into TARGET.
 
-    TODO: replace the body of this function with your real enroll request,
-    captured from the browser (F12 -> Network -> Copy as cURL). It is likely one
-    of these shapes:
+    Mirrors the captured request:
+        POST /Final-Enrollment/AddOfferedCourse   (multipart/form-data)
+        fields: _token, course_code, id, semester, sec, section, contact,
+                status_pre_taken
 
-      # If enrolling is a GET to the course URL:
-      r = client.get(f"/courseinformation/{TARGET['course_id']}/"
-                     f"{TARGET['token_a']}/{TARGET['token_b']}")
-
-      # If it is a POST with a CSRF token + section id:
-      # first GET the page to grab a fresh _token, then:
-      # r = client.post("/enroll", data={"_token": token, "section": ...})
-
-    Return something short describing the outcome (status code / message).
+    First GET the popup page to obtain a fresh CSRF _token, then POST.
     """
-    r = client.get(
-        f"/courseinformation/{TARGET['course_id']}/"
-        f"{TARGET['token_a']}/{TARGET['token_b']}"
-    )
-    return f"{account['student_id']}: HTTP {r.status_code}"
+    # 1) fetch a fresh _token from the section's popup page
+    popup = client.get(
+        f"/courseinformation/{TARGET['offering_id']}/"
+        f"{TARGET['course_code_enc']}/{TARGET['section_enc']}"
+    ).text
+    m = re.search(r'name="_token"\s+value="([^"]+)"', popup)
+    token = m.group(1) if m else ""
+
+    # 2) POST the enrollment as multipart form-data (None => plain form field)
+    fields = {
+        "_token": (None, token),
+        "course_code": (None, TARGET["course_code"]),   # plaintext
+        "id": (None, account["student_id"]),
+        "semester": (None, TARGET["semester"]),
+        "sec": (None, TARGET["sec"]),
+        "section": (None, TARGET["section"]),           # plaintext
+        "contact": (None, "0"),
+        "status_pre_taken": (None, ""),
+    }
+    r = client.post("/AddOfferedCourse", files=fields)
+    snippet = r.text[:80].replace("\n", " ")
+    return f"{account['student_id']}: HTTP {r.status_code} :: {snippet}"
 
 
 def main() -> None:

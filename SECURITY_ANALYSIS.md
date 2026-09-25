@@ -115,7 +115,48 @@ text.** Editing that `id` (as the owner reproduced) is what redirects the
 enrollment to a different section. This is the code-level confirmation of the
 IDOR.
 
-> **Scope note (honesty):** these are client-side files (HTML/JS). The
+### Confirmed enrollment request — the action trusts PLAINTEXT parameters (captured)
+
+An intercepted **Submit** request (via an HTTP proxy) shows the real enrollment
+action:
+
+```
+POST /Final-Enrollment/AddOfferedCourse        Content-Type: multipart/form-data
+
+_token           = <CSRF token>
+course_code      = CSC 466        <-- PLAINTEXT
+id               = <student_id>       <-- PLAINTEXT (student id, in the request body)
+semester         = Fall 2026
+sec              = DAY
+section          = O              <-- PLAINTEXT
+contact          = 0
+status_pre_taken =
+```
+
+This is decisive:
+
+1. **The encryption is bypassed at the action.** The encrypted `iv/value/mac/tag`
+   tokens appear only in the GET URL that *displays* the popup. The POST that
+   actually enrolls uses **plaintext `course_code` and `section`**. An attacker
+   edits those two plaintext fields directly (e.g. in a proxy's repeater) and
+   never needs to defeat the encryption — so the encryption provides no real
+   protection at the point that matters.
+2. **The student `id` is a request-body parameter (`id=<student_id>`).** If the
+   server uses this body value to decide *whose* enrollment to create rather than
+   the authenticated session, changing it would enroll a **different** student —
+   an identity IDOR / horizontal privilege escalation. This must be verified, but
+   the presence of `id` in the body is a strong indicator.
+3. The request was captured for a **full** section, showing it can be crafted and
+   replayed against sections that should reject enrollment; replaying it
+   concurrently is the mechanism behind the seat overbooking (Finding 2).
+
+**Fix:** on the server, derive `course_code`, `section`, and the acting
+`student_id` from **trusted server state** (the decrypted token and the
+authenticated session), never from plaintext request parameters; re-validate
+seat availability and authorization server-side inside the atomic update.
+
+> **Scope note (honesty):** the client-side files (HTML/JS) and this captured
+> request are what a black-box tester can see. The
 > server-side seat-check and enrollment query (PHP) are not downloadable through
 > the browser, so the *seat-overbooking* root cause (Finding 2) is evidenced by
 > observed behavior, not by this source. What the source authentically proves is
