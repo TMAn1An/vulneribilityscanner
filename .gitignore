@@ -4,3 +4,6 @@ __pycache__/
 venv/
 burp-ca.der
 burp-ca.pem
+
+# race demo local db
+race_demo/seatdemo.db
