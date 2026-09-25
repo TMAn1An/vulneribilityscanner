@@ -81,6 +81,46 @@ an attacker can freely change it. This is a classic **Insecure Direct Object
 Reference (IDOR)**: the object identifier is user-controlled and not validated
 against the user's actual authorization or against the trusted token.
 
+### Confirmed from the client-side source code (authentic, not inferred)
+
+The enrollment page (`Final-Enrollment/StuPreOffering`) builds the URL in
+JavaScript:
+
+```javascript
+function openPopup(id, course_code, section) {
+    const url = `https://iubatapp.net/Final-Enrollment/courseinformation/${id}/${course_code}/${section}`;
+    popupWindow = window.open(url, '_blank', 'width=500,height=480,...');
+}
+```
+
+Each section's button passes these arguments (real example from the page):
+
+```html
+onclick="openPopup('94290245446701221',
+                   'eyJpdiI6...(Laravel-encrypted)',
+                   'eyJpdiI6...(Laravel-encrypted)')"
+```
+
+So the three URL segments are:
+
+| Segment | Source value | Integrity-protected? |
+|---------|--------------|----------------------|
+| `id` (offering id) | **plaintext**, e.g. `94290245446701221` | **No** — freely editable |
+| `course_code` | Laravel `Crypt` payload (`iv/value/mac/tag`) | Yes (MAC) |
+| `section` | Laravel `Crypt` payload (`iv/value/mac/tag`) | Yes (MAC) |
+
+**The course code and section are encrypted and tamper-proof, but the offering
+`id` — the value that selects which section is enrolled — is sent in plain
+text.** Editing that `id` (as the owner reproduced) is what redirects the
+enrollment to a different section. This is the code-level confirmation of the
+IDOR.
+
+> **Scope note (honesty):** these are client-side files (HTML/JS). The
+> server-side seat-check and enrollment query (PHP) are not downloadable through
+> the browser, so the *seat-overbooking* root cause (Finding 2) is evidenced by
+> observed behavior, not by this source. What the source authentically proves is
+> the untrusted, user-editable offering `id` above.
+
 ### Why the "fix" is incomplete
 The owner reports the enroll pop-up still appears but the final action now fails —
 i.e. a *symptom* was blocked, but the underlying trust of the URL-supplied id may
@@ -198,6 +238,24 @@ transaction, **releases the old section's seat and reserves the new one**.
 
 ---
 
+## Finding 4 — Ineffective client-side "protections" (minor)
+
+The enrollment page attempts to prevent inspection by disabling the right-click
+menu and blocking `Ctrl+C` / `Ctrl+U` (view-source) / `Ctrl+V`:
+
+```javascript
+function disableRightClick(event) { if (event.button == 2) { event.preventDefault(); return false; } }
+// ... document.onkeydown blocks keyCodes 67 (C), 85/117 (U), 86 (V)
+```
+
+This is **security theater**: it is trivially bypassed (the source in this very
+report was obtained despite it) and provides no protection. Security must be
+enforced **server-side**. Relying on hiding the client encourages the false
+belief that the plaintext `id` above is safe because users "can't see it" — they
+can.
+
+---
+
 ## How the findings combine
 
 A bot that (a) exploits the IDOR to target arbitrary/full sections and (b) fires
@@ -268,6 +326,7 @@ Additional hardening:
 | 1 | Enroll via swapped course id in URL | Broken Access Control (IDOR) | Section chosen from untrusted URL id, not the signed token | Partially mitigated |
 | 2 | Seats exceed 40 (→41) under bot | Race Condition (TOCTOU) | Non-atomic check-then-update of seat count | **Active** |
 | 3 | Re-taking a course in another section overwrites it | Improper duplicate check / business-logic flaw | "Already enrolled" guard keyed on course+section instead of course | **Active** |
+| 4 | Right-click / view-source disabled | Ineffective client-side control | Security by hiding the client; trivially bypassed | Minor |
 
 ---
 
